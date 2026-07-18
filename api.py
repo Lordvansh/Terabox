@@ -4,6 +4,7 @@ import requests
 import json
 import re
 import time
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 
 app = Flask(__name__)
@@ -59,7 +60,7 @@ def parse_proxy(proxy_string):
     return None
 
 def get_terabox_id(url):
-    """Extract terabox ID from URL"""
+    """Extract terabox ID from ANY terabox URL format"""
     if not url:
         return None
     
@@ -67,17 +68,42 @@ def get_terabox_id(url):
     if not url.startswith('http'):
         url = 'https://' + url
     
-    patterns = [
-        r'/s/([a-zA-Z0-9_-]+)',
-        r'terafileshare\.com/s/([a-zA-Z0-9_-]+)',
-        r'terabox\.com/s/([a-zA-Z0-9_-]+)',
-        r'1024terabox\.com/s/([a-zA-Z0-9_-]+)'
+    # Parse URL to get components
+    parsed = urlparse(url)
+    path = parsed.path
+    query_params = parse_qs(parsed.query)
+    
+    # Format 1: /s/ID (most common)
+    match = re.search(r'/s/([a-zA-Z0-9_-]+)', path)
+    if match:
+        return match.group(1)
+    
+    # Format 2: ?surl=ID (1024tera.com format)
+    if 'surl' in query_params:
+        return query_params['surl'][0]
+    
+    # Format 3: ?share_id=ID or ?id=ID
+    for param in ['share_id', 'id', 'shareId', 'file_id']:
+        if param in query_params:
+            return query_params[param][0]
+    
+    # Format 4: Extract from path like /share/ID or /file/ID
+    path_patterns = [
+        r'/share/([a-zA-Z0-9_-]+)',
+        r'/file/([a-zA-Z0-9_-]+)',
+        r'/d/([a-zA-Z0-9_-]+)',
+        r'/f/([a-zA-Z0-9_-]+)'
     ]
     
-    for pattern in patterns:
-        match = re.search(pattern, url)
+    for pattern in path_patterns:
+        match = re.search(pattern, path)
         if match:
             return match.group(1)
+    
+    # Format 5: If nothing else works, try to find any alphanumeric ID in the URL
+    # This is a fallback for formats like /wap/share/filelist?tera_link_id=xxx
+    if 'tera_link_id' in query_params:
+        return query_params['tera_link_id'][0]
     
     return None
 
@@ -125,7 +151,7 @@ def get_stream_data(terabox_id, proxy_dict=None):
                 'mobile': True,
                 'desktop': False
             },
-            interpreter='nodejs'
+            interpreter='python'
         )
         
         if proxy_dict:
@@ -167,7 +193,7 @@ def get_stream_data(terabox_id, proxy_dict=None):
 
 @app.route('/api/terabox', methods=['GET', 'POST'])
 def terabox_api():
-    """Main API endpoint - Returns only Direct Download, Stream URL, and Thumbnail"""
+    """Main API endpoint - Handles ALL terabox URL formats"""
     if request.method == 'GET':
         proxy = request.args.get('proxy')
         url = request.args.get('url')
@@ -191,7 +217,7 @@ def terabox_api():
         return jsonify({
             'success': False,
             'error': 'Invalid URL',
-            'message': 'Could not extract terabox ID from URL'
+            'message': f'Could not extract terabox ID from URL: {url}'
         }), 400
     
     proxy_dict = None
@@ -215,7 +241,6 @@ def terabox_api():
     
     file_info = data['list'][0] if data.get('list') else {}
     
-    # Simplified response - ONLY Direct Download, Stream URL, and Thumbnail
     response = {
         'success': True,
         'data': {
@@ -254,36 +279,27 @@ def index():
         'service': 'Terabox API - IteraPlay Token Generator',
         'version': '1.0.0',
         'developer': '@KindCoders',
+        'supported_url_formats': [
+            'https://terafileshare.com/s/ID',
+            'https://www.1024tera.com/wap/share/filelist?surl=ID',
+            'https://terabox.com/s/ID',
+            'https://1024terabox.com/s/ID',
+            'Any URL with ?surl=ID or /s/ID pattern'
+        ],
         'endpoints': {
             '/api/terabox': {
                 'method': 'POST or GET',
                 'params': {
-                    'url': 'Terabox share URL (required)',
-                    'proxy': 'Proxy string (optional) - Formats: host:port or host:port:username:password'
+                    'url': 'Terabox share URL (any format)',
+                    'proxy': 'Proxy string (optional)'
                 },
-                'response': {
-                    'direct_download': 'Direct download URL',
-                    'stream_url': 'Stream URL',
-                    'thumbnail': 'Thumbnail URL'
-                },
-                'example_get': '/api/terabox?url=https://terafileshare.com/s/1xJtL3j2LJ-ZsUA6zbG7Pug&proxy=p.webshare.io:80:user:pass',
-                'example_post': '{"url": "https://terafileshare.com/s/1xJtL3j2LJ-ZsUA6zbG7Pug", "proxy": "p.webshare.io:80:user:pass"}'
+                'example': '/api/terabox?url=https://www.1024tera.com/wap/share/filelist?surl=u0SKwAHY1WmPsFgI6fpIpw&proxy=p.webshare.io:80:user:pass'
             },
             '/api/health': {
                 'method': 'GET',
                 'description': 'Health check'
             }
-        },
-        'proxy_formats': [
-            'host:port (Simple)',
-            'host:port:username:password (Webshare/authenticated)',
-            'username:password@host:port (Alternative format)'
-        ]
+        }
     }), 200
 
-# Vercel requires this - the app object must be named 'app'
-# No if __name__ == '__main__' block needed for Vercel
-
-# For local testing only
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+app = app
