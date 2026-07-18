@@ -6,8 +6,16 @@
   },
   "routes": [
     {
+      "src": "/api/terabox",
+      "dest": "/api.py"
+    },
+    {
+      "src": "/api/health",
+      "dest": "/api.py"
+    },
+    {
       "src": "/(.*)",
-      "dest": "api.py"
+      "dest": "/api.py"
     }
   ]
 }
