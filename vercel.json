@@ -1,21 +1,15 @@
 {
-  "functions": {
-    "api.py": {
-      "runtime": "python3.9"
+  "version": 2,
+  "builds": [
+    {
+      "src": "api.py",
+      "use": "@vercel/python"
     }
-  },
+  ],
   "routes": [
     {
-      "src": "/api/terabox",
-      "dest": "/api.py"
-    },
-    {
-      "src": "/api/health",
-      "dest": "/api.py"
-    },
-    {
       "src": "/(.*)",
-      "dest": "/api.py"
+      "dest": "api.py"
     }
   ]
 }
