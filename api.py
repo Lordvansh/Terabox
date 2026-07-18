@@ -4,7 +4,6 @@ import requests
 import json
 import re
 import time
-from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 
 app = Flask(__name__)
@@ -59,56 +58,8 @@ def parse_proxy(proxy_string):
     
     return None
 
-def get_terabox_id(url):
-    """Extract terabox ID from ANY terabox URL format"""
-    if not url:
-        return None
-    
-    url = url.strip()
-    if not url.startswith('http'):
-        url = 'https://' + url
-    
-    # Parse URL to get components
-    parsed = urlparse(url)
-    path = parsed.path
-    query_params = parse_qs(parsed.query)
-    
-    # Format 1: /s/ID (most common)
-    match = re.search(r'/s/([a-zA-Z0-9_-]+)', path)
-    if match:
-        return match.group(1)
-    
-    # Format 2: ?surl=ID (1024tera.com format)
-    if 'surl' in query_params:
-        return query_params['surl'][0]
-    
-    # Format 3: ?share_id=ID or ?id=ID
-    for param in ['share_id', 'id', 'shareId', 'file_id']:
-        if param in query_params:
-            return query_params[param][0]
-    
-    # Format 4: Extract from path like /share/ID or /file/ID
-    path_patterns = [
-        r'/share/([a-zA-Z0-9_-]+)',
-        r'/file/([a-zA-Z0-9_-]+)',
-        r'/d/([a-zA-Z0-9_-]+)',
-        r'/f/([a-zA-Z0-9_-]+)'
-    ]
-    
-    for pattern in path_patterns:
-        match = re.search(pattern, path)
-        if match:
-            return match.group(1)
-    
-    # Format 5: If nothing else works, try to find any alphanumeric ID in the URL
-    # This is a fallback for formats like /wap/share/filelist?tera_link_id=xxx
-    if 'tera_link_id' in query_params:
-        return query_params['tera_link_id'][0]
-    
-    return None
-
-def get_stream_data(terabox_id, proxy_dict=None):
-    """Get stream data from iteraplay"""
+def get_stream_data(terabox_url, proxy_dict=None):
+    """Get stream data from iteraplay - accepts ANY terabox URL"""
     base_url = "https://iteraplay.com"
     
     headers = {
@@ -167,7 +118,8 @@ def get_stream_data(terabox_id, proxy_dict=None):
         if session_response.status_code != 200:
             return None, f"Session failed: {session_response.status_code}"
         
-        payload = {"url": f"https://terafileshare.com/s/{terabox_id}"}
+        # Send the URL directly as-is to iteraplay
+        payload = {"url": terabox_url}
         response = scraper.post(
             f"{base_url}/api/stream",
             headers=headers,
@@ -186,14 +138,14 @@ def get_stream_data(terabox_id, proxy_dict=None):
         elif response.status_code == 403:
             return None, "403 Forbidden - Proxy may be blocked"
         else:
-            return None, f"Failed: {response.status_code}"
+            return None, f"Failed: {response.status_code} - {response.text[:100]}"
             
     except Exception as e:
         return None, f"Error: {str(e)}"
 
 @app.route('/api/terabox', methods=['GET', 'POST'])
 def terabox_api():
-    """Main API endpoint - Handles ALL terabox URL formats"""
+    """Main API endpoint - Accepts ANY terabox URL format"""
     if request.method == 'GET':
         proxy = request.args.get('proxy')
         url = request.args.get('url')
@@ -209,17 +161,11 @@ def terabox_api():
             'message': 'Please provide a terabox URL'
         }), 400
     
+    # Auto-add https if missing
     if not url.startswith('http'):
         url = 'https://' + url
     
-    terabox_id = get_terabox_id(url)
-    if not terabox_id:
-        return jsonify({
-            'success': False,
-            'error': 'Invalid URL',
-            'message': f'Could not extract terabox ID from URL: {url}'
-        }), 400
-    
+    # Parse proxy if provided
     proxy_dict = None
     if proxy:
         proxy_dict = parse_proxy(proxy)
@@ -230,7 +176,8 @@ def terabox_api():
                 'message': 'Proxy format not recognized. Use: host:port or host:port:username:password'
             }), 400
     
-    data, error = get_stream_data(terabox_id, proxy_dict)
+    # Send URL directly to iteraplay
+    data, error = get_stream_data(url, proxy_dict)
     
     if not data:
         return jsonify({
@@ -257,7 +204,6 @@ def terabox_api():
                 'stream_url': file_info.get('stream_url'),
                 'thumbnail': file_info.get('thumbnail')
             },
-            'terabox_id': terabox_id,
             'url': url
         },
         'developer': '@KindCoders'
@@ -269,7 +215,7 @@ def terabox_api():
 def health():
     return jsonify({
         'status': 'ok',
-        'message': 'Terabox API is running',
+        'message': 'Terabox API is running - Accepts ANY terabox URL format',
         'developer': '@KindCoders'
     }), 200
 
@@ -279,19 +225,20 @@ def index():
         'service': 'Terabox API - IteraPlay Token Generator',
         'version': '1.0.0',
         'developer': '@KindCoders',
+        'description': 'Accepts ANY terabox URL format and passes it directly to iteraplay',
         'supported_url_formats': [
             'https://terafileshare.com/s/ID',
-            'https://www.1024tera.com/wap/share/filelist?surl=ID',
+            'https://www.1024tera.com/wap/share/filelist?surl=ID&tera_link_id=ID&tera_link_type=1',
             'https://terabox.com/s/ID',
             'https://1024terabox.com/s/ID',
-            'Any URL with ?surl=ID or /s/ID pattern'
+            'ANY terabox/terafileshare/1024tera URL'
         ],
         'endpoints': {
             '/api/terabox': {
                 'method': 'POST or GET',
                 'params': {
-                    'url': 'Terabox share URL (any format)',
-                    'proxy': 'Proxy string (optional)'
+                    'url': 'ANY Terabox share URL (required)',
+                    'proxy': 'Proxy string (optional) - Formats: host:port or host:port:username:password'
                 },
                 'example': '/api/terabox?url=https://www.1024tera.com/wap/share/filelist?surl=u0SKwAHY1WmPsFgI6fpIpw&proxy=p.webshare.io:80:user:pass'
             },
@@ -299,6 +246,10 @@ def index():
                 'method': 'GET',
                 'description': 'Health check'
             }
+        },
+        'response': {
+            'video_info': 'Title, Size, Duration, Quality, Type',
+            'download_links': 'Direct Download, Stream URL, Thumbnail'
         }
     }), 200
 
