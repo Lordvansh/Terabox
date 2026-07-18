@@ -6,9 +6,9 @@ import re
 import time
 import os
 import sys
-import tempfile
 from datetime import datetime
 from http.cookiejar import MozillaCookieJar
+import io
 
 app = Flask(__name__)
 
@@ -26,15 +26,15 @@ iteraplay.com	FALSE	/	FALSE	1818944207	remember_me	yes
 #HttpOnly_iteraplay.com	FALSE	/	TRUE	1784470534	session_id	e9fa069a6b5173ec807e0179aad579b6"""
 
 def load_cookies():
-    """Load cookies from the saved string"""
+    """Load cookies from the saved string - Vercel compatible"""
     try:
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
-            f.write(COOKIE_STRING)
-            temp_file = f.name
-        
+        # Create a cookie jar and load from string
         cookie_jar = MozillaCookieJar()
-        cookie_jar.load(temp_file, ignore_expires=True, ignore_discard=True)
-        os.unlink(temp_file)
+        
+        # Use StringIO instead of tempfile for Vercel
+        cookie_file = io.StringIO(COOKIE_STRING)
+        cookie_jar.load(cookie_file, ignore_expires=True, ignore_discard=True)
+        
         return cookie_jar
     except Exception as e:
         print(f"Failed to load cookies: {e}")
@@ -107,8 +107,13 @@ def get_stream_data(terabox_url):
             interpreter='python'
         )
         
-        # Set cookies
-        scraper.cookies = cookie_jar
+        # Set cookies - convert to dict for requests
+        cookie_dict = {}
+        for cookie in cookie_jar:
+            cookie_dict[cookie.name] = cookie.value
+        
+        # Also set the cookies directly in the session
+        scraper.cookies.update(cookie_dict)
         
         # First, visit the page to get verification token
         csrf_token = get_verification_token(scraper, base_url)
@@ -118,6 +123,12 @@ def get_stream_data(terabox_url):
             headers['x-csrf-token'] = csrf_token
             headers['csrf-token'] = csrf_token
             headers['X-XSRF-TOKEN'] = csrf_token
+            headers['X-CSRF-Token'] = csrf_token
+        
+        # Also add the token as a cookie
+        if csrf_token:
+            scraper.cookies.set('XSRF-TOKEN', csrf_token)
+            scraper.cookies.set('csrf_token', csrf_token)
         
         # Make request with cookies and token
         payload = {"url": terabox_url}
@@ -231,7 +242,7 @@ def index():
             'video_info': 'Title, Size, Duration, Quality, Type',
             'download_links': 'Direct Download, Stream URL, Thumbnail'
         },
-        'note': 'No proxy parameter needed - uses saved session cookies'
+        'note': 'No proxy needed - uses saved session cookies'
     }), 200
 
 app = app
@@ -245,12 +256,6 @@ if __name__ == '__main__':
     print("   GET/POST /api/terabox?url=TERABOX_URL")
     print("   GET /api/health")
     print("   GET / - Documentation")
-    print("\n💡 Uses saved session cookies to bypass rate limits")
-    print("📦 Response includes:")
-    print("   - Direct Download URL")
-    print("   - Stream URL")
-    print("   - Thumbnail URL")
-    print("   - Video Info (Title, Size, Duration, Quality)")
     print("\n🔧 Starting server...")
     print("=" * 50)
     
