@@ -8,20 +8,8 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# Your saved cookies as a HARDCODED dictionary (no parsing needed)
-COOKIES = {
-    "remember_me": "yes",
-    "_ga_NFYSD8YZN4": "GS2.1.s1784384135$o1$g1$t1784384242$j27$l0$h0",
-    "__secure_token": "eyJ1aWQiOm51bGwsInNpZCI6ImU5ZmEwNjlhNmI1MTczZWM4MDdlMDE3OWFhZDU3OWI2IiwidCI6MTc4NDM4NDI0MjgwNSwibiI6IjEwODAwZmM3YzAyYzgyY2MifTo6MzI2ZWYwMDQzZTZhYTBjNmNlODhiNmFkYmUxNWYyZTFmYjkwZTlmMzQ5MjBhZTdhM2EzNWM3ZGRiNzQ1OTQ2NQ%3D%3D",
-    "_ga": "GA1.1.558453591.1784384135",
-    "FCCDCF": "%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%5B%5B32%2C%22%5B%5C%2289fec263-4582-4899-93f3-f98160446051%5C%22%2C%5B1784384136%5D%5D%22%5D%5D%5D",
-    "FCNEC": "%5B%5B%22AKsRol9TLkQ2UJYcRn72sbYVFRmdKbj829okOONU4bmrqE7zgWJ2NTFKjqoruvwlXaLVyxHLmc24a6XID7ZXSq0aYe2L80agFHmQnep_15x9iuo9X8OGAv5DI3VYIbqeAU6EGyGY7oUBnBMu2rDFNu3KwGY8QYGdwA%3D%3D%22%5D%2Cnull%2C%5B%5B21%2C%22%5B%5B%5B%5B5%2C1%2C%5B0%5D%5D%2C%5B1784384138%2C145374000%5D%2C%5B1209600%5D%5D%5D%5D%22%5D%5D%5D",
-    "login_token": "f0f7cf11ab5adeb1d35cce1df4d0692e383c87d89bc1798edc92b73dd266499181b73aaa48a406d2350abbcd204b2ebc5e24d34613b1e991fe57863667fa25cb",
-    "session_id": "e9fa069a6b5173ec807e0179aad579b6"
-}
-
 def get_stream_data(terabox_url):
-    """Get stream data using hardcoded cookies"""
+    """Get stream data by first getting fresh session"""
     base_url = "https://iteraplay.com"
     
     headers = {
@@ -41,7 +29,7 @@ def get_stream_data(terabox_url):
     }
     
     try:
-        # Create scraper
+        # Create scraper with browser emulation
         scraper = cloudscraper.create_scraper(
             browser={
                 'browser': 'chrome',
@@ -52,23 +40,20 @@ def get_stream_data(terabox_url):
             interpreter='python'
         )
         
-        # Set cookies directly
-        for name, value in COOKIES.items():
-            scraper.cookies.set(name, value)
-        
-        # First, visit the page to get verification token
-        print("Visiting iteraplay.com...")
+        # Step 1: Visit the main page to get fresh session
+        print("Getting fresh session from iteraplay.com...")
         response = scraper.get(base_url, timeout=15)
-        print(f"Status: {response.status_code}")
+        print(f"Main page status: {response.status_code}")
         
-        # Get CSRF token from cookies after page load
+        # Step 2: Get CSRF token from cookies
         csrf_token = None
         for cookie in scraper.cookies:
-            if 'xsrf' in cookie.name.lower() or 'csrf' in cookie.name.lower() or 'token' in cookie.name.lower():
+            if 'xsrf' in cookie.name.lower() or 'csrf' in cookie.name.lower():
                 csrf_token = cookie.value
+                print(f"Found CSRF token: {csrf_token[:20]}...")
                 break
         
-        # If no token in cookies, try to extract from HTML
+        # Step 3: If no token in cookies, extract from HTML
         if not csrf_token:
             token_patterns = [
                 r'name="csrf-token" content="([^"]+)"',
@@ -81,17 +66,28 @@ def get_stream_data(terabox_url):
                 match = re.search(pattern, response.text)
                 if match:
                     csrf_token = match.group(1)
+                    print(f"Found CSRF token in HTML: {csrf_token[:20]}...")
                     break
         
-        # Add token to headers if found
+        # Step 4: Add token to headers if found
         if csrf_token:
             headers['x-csrf-token'] = csrf_token
             headers['csrf-token'] = csrf_token
             headers['X-XSRF-TOKEN'] = csrf_token
             scraper.cookies.set('XSRF-TOKEN', csrf_token)
         
-        # Make API request
+        # Step 5: Also try to get __secure_token from cookies
+        secure_token = None
+        for cookie in scraper.cookies:
+            if '__secure_token' in cookie.name:
+                secure_token = cookie.value
+                print(f"Found secure token")
+                break
+        
+        # Step 6: Make the API request with fresh cookies
         payload = {"url": terabox_url}
+        print(f"Making API request for: {terabox_url}")
+        
         response = scraper.post(
             f"{base_url}/api/stream",
             headers=headers,
@@ -99,16 +95,19 @@ def get_stream_data(terabox_url):
             timeout=30
         )
         
+        print(f"API Response status: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
             if data.get('status') == 'success':
+                print("Stream data received successfully!")
                 return data, None
             else:
                 return None, f"API error: {data.get('error', 'Unknown')}"
         elif response.status_code == 429:
             return None, "Rate limited! Try again later"
         elif response.status_code == 403:
-            return None, "403 Forbidden - Session may have expired"
+            return None, "403 Forbidden - Try again in a few minutes"
         else:
             return None, f"Failed: {response.status_code} - {response.text[:100]}"
             
@@ -117,7 +116,7 @@ def get_stream_data(terabox_url):
 
 @app.route('/api/terabox', methods=['GET', 'POST'])
 def terabox_api():
-    """Main API endpoint"""
+    """Main API endpoint - Gets fresh session each time"""
     if request.method == 'GET':
         url = request.args.get('url')
     else:
@@ -134,6 +133,7 @@ def terabox_api():
     if not url.startswith('http'):
         url = 'https://' + url
     
+    # Get fresh session and data
     data, error = get_stream_data(url)
     
     if not data:
@@ -171,17 +171,17 @@ def terabox_api():
 def health():
     return jsonify({
         'status': 'ok',
-        'message': 'Terabox API is running',
+        'message': 'Terabox API is running - Gets fresh session each request',
         'developer': '@KindCoders'
     }), 200
 
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
-        'service': 'Terabox API',
+        'service': 'Terabox API - Fresh Session',
         'version': '1.0.0',
         'developer': '@KindCoders',
-        'description': 'Uses saved session cookies to bypass rate limiting',
+        'description': 'Gets fresh session from iteraplay.com for each request',
         'endpoints': {
             '/api/terabox': {
                 'method': 'POST or GET',
@@ -194,14 +194,23 @@ def index():
                 'method': 'GET',
                 'description': 'Health check'
             }
-        }
+        },
+        'note': 'No cookies needed - gets fresh session automatically'
     }), 200
 
 app = app
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("  🎬 TERABOX API")
+    print("  🎬 TERABOX API - Fresh Session")
     print("  👨‍💻 Developer: @KindCoders")
     print("=" * 50)
+    print("\n📍 Endpoints:")
+    print("   GET/POST /api/terabox?url=TERABOX_URL")
+    print("   GET /api/health")
+    print("   GET / - Documentation")
+    print("\n💡 Gets fresh session automatically - no cookies needed")
+    print("🔧 Starting server...")
+    print("=" * 50)
+    
     app.run(host='0.0.0.0', port=5000, debug=True)
